@@ -15,10 +15,6 @@ import (
 	"time"
 )
 
-var lock struct {
-	sync.Mutex // <-- this mutex protects
-}
-
 var logger *zap.Logger
 
 func main() {
@@ -45,15 +41,19 @@ func main() {
 		return
 	}
 
+	var wg sync.WaitGroup
 	for i, acc := range accounts {
-		go ping(proxies[i%len(proxies)], acc)
+		wg.Add(1)
+		go func(proxy string, account request.Authentication) {
+			defer wg.Done()
+			handleAccount(proxy, account)
+		}(proxies[i%len(proxies)], acc)
 	}
 
-	select {}
-
+	wg.Wait()
 }
 
-func ping(proxyURL string, authInfo request.Authentication) {
+func handleAccount(proxyURL string, authInfo request.Authentication) {
 	rand.Seed(time.Now().UnixNano())
 	client := resty.New().SetProxy(proxyURL).
 		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
@@ -73,11 +73,12 @@ func ping(proxyURL string, authInfo request.Authentication) {
 		Logindata: struct {
 			V        string `json:"_v"`
 			Datetime string `json:"datetime"`
-		}(struct {
-			V        string
-			Datetime string
-		}{V: "1.0.6", Datetime: time.Now().Format("2006-01-02 15:04:05")}),
+		}{
+			V:        "1.0.6",
+			Datetime: time.Now().Format("2006-01-02 15:04:05"),
+		},
 	}
+
 	var loginResponse request.LoginResponse
 	_, err := client.R().
 		SetBody(loginRequest).
@@ -86,7 +87,7 @@ func ping(proxyURL string, authInfo request.Authentication) {
 	if err != nil {
 		logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
 		time.Sleep(1 * time.Minute)
-		go ping(proxyURL, authInfo)
+		handleAccount(proxyURL, authInfo)
 		return
 	}
 	lastLogin := time.Now()
@@ -97,6 +98,7 @@ func ping(proxyURL string, authInfo request.Authentication) {
 		"numberoftabs": 0,
 		"_v":           "1.0.6",
 	}
+
 	for {
 		if time.Now().Sub(lastLogin) > 2*time.Hour {
 			loginRequest.Logindata.Datetime = time.Now().Format("2006-01-02 15:04:05")
@@ -107,9 +109,10 @@ func ping(proxyURL string, authInfo request.Authentication) {
 			if err != nil {
 				logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
 				time.Sleep(1 * time.Minute)
-				go ping(proxyURL, authInfo)
+				handleAccount(proxyURL, authInfo)
 				return
 			}
+			lastLogin = time.Now()
 		}
 
 		res, err := client.R().
@@ -118,18 +121,19 @@ func ping(proxyURL string, authInfo request.Authentication) {
 			Post(constant.KeepAliveURL)
 		if err != nil {
 			logger.Error("Keep alive error", zap.String("acc", authInfo.Email), zap.Error(err))
+		} else {
+			logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
 		}
-		logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
 
 		res, err = client.R().
 			SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
 			Get(constant.GetPointURL)
 		if err != nil {
 			logger.Error("Get point error", zap.String("acc", authInfo.Email), zap.Error(err))
+		} else {
+			logger.Info("Get point success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
 		}
-		logger.Info("Get point success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
 
 		time.Sleep(3 * time.Minute)
 	}
-
 }
