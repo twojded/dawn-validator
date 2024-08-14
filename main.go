@@ -4,7 +4,6 @@ import (
 	"blockmesh/constant"
 	"blockmesh/request"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"github.com/go-resty/resty/v2"
 	"github.com/mattn/go-colorable"
@@ -43,12 +42,14 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	for i, acc := range accounts {
-		wg.Add(1)
-		go func(proxy string, account request.Authentication) {
-			defer wg.Done()
-			handleAccount(proxy, account)
-		}(proxies[i%len(proxies)], acc)
+	for _, acc := range accounts {
+		for i := 0; i < len(proxies); i++ {
+			wg.Add(1)
+			go func(proxy string, account request.Authentication) {
+				defer wg.Done()
+				handleAccount(proxy, account)
+			}(proxies[i], acc)
+		}
 	}
 
 	wg.Wait()
@@ -81,8 +82,9 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 	}
 
 	var loginResponse request.LoginResponse
-	res, err := client.R().
+	_, err := client.R().
 		SetBody(loginRequest).
+		SetResult(&loginResponse).
 		Post(constant.LoginURL)
 	if err != nil {
 		logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
@@ -90,15 +92,6 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 		handleAccount(proxyURL, authInfo)
 		return
 	}
-
-	err = json.Unmarshal(res.Body(), &loginResponse)
-	if err != nil {
-		logger.Error("Error parsing JSON", zap.String("acc", authInfo.Email), zap.Error(err))
-		time.Sleep(1 * time.Minute)
-		handleAccount(proxyURL, authInfo)
-		return
-	}
-
 	lastLogin := time.Now()
 
 	keepAliveRequest := map[string]interface{}{
@@ -111,18 +104,12 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 	for {
 		if time.Now().Sub(lastLogin) > 2*time.Hour {
 			loginRequest.Logindata.Datetime = time.Now().Format("2006-01-02 15:04:05")
-			res, err = client.R().
+			_, err := client.R().
 				SetBody(loginRequest).
+				SetResult(&loginResponse).
 				Post(constant.LoginURL)
 			if err != nil {
 				logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
-				time.Sleep(1 * time.Minute)
-				handleAccount(proxyURL, authInfo)
-				return
-			}
-			err = json.Unmarshal(res.Body(), &loginResponse)
-			if err != nil {
-				logger.Error("Error parsing JSON", zap.String("acc", authInfo.Email), zap.Error(err))
 				time.Sleep(1 * time.Minute)
 				handleAccount(proxyURL, authInfo)
 				return
@@ -137,36 +124,15 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 		if err != nil {
 			logger.Error("Keep alive error", zap.String("acc", authInfo.Email), zap.Error(err))
 		} else {
-			logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("points", extractPoints(res.Body())))
+			logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("points", extractPoints(res.String())))
 		}
 
-		res, err = client.R().
-			SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
-			Get(constant.GetPointURL)
-		if err != nil {
-			logger.Error("Get point error", zap.String("acc", authInfo.Email), zap.Error(err))
-		} else {
-			logger.Info("Get point success", zap.String("acc", authInfo.Email), zap.String("points", extractPoints(res.Body())))
-		}
-
-		time.Sleep(3 * time.Minute)
+		time.Sleep(10 * time.Second) // Уменьшенная задержка с 3 минут до 10 секунд
 	}
 }
 
-func extractPoints(responseBody []byte) string {
-	var result map[string]interface{}
-	err := json.Unmarshal(responseBody, &result)
-	if err != nil {
-		return "N/A"
-	}
-
-	if data, ok := result["data"].(map[string]interface{}); ok {
-		if rewardPoint, ok := data["rewardPoint"].(map[string]interface{}); ok {
-			if points, ok := rewardPoint["points"].(float64); ok {
-				return fmt.Sprintf("%.2f", points)
-			}
-		}
-	}
-
-	return "N/A"
+func extractPoints(response string) string {
+	// Function to parse and extract the "points" from the response string
+	// Implement the logic based on the response format
+	return response // Placeholder: Replace with actual extraction logic
 }
