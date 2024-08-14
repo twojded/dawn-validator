@@ -44,18 +44,18 @@ func main() {
 	var wg sync.WaitGroup
 	for i, acc := range accounts {
 		wg.Add(1)
-		go func(proxy string, account request.Authentication) {
+		go func(account request.Authentication, proxies []string) {
 			defer wg.Done()
-			handleAccount(proxy, account)
-		}(proxies[i%len(proxies)], acc)
+			handleAccount(account, proxies)
+		}(acc, proxies)
 	}
 
 	wg.Wait()
 }
 
-func handleAccount(proxyURL string, authInfo request.Authentication) {
+func handleAccount(authInfo request.Authentication, proxies []string) {
 	rand.Seed(time.Now().UnixNano())
-	client := resty.New().SetProxy(proxyURL).
+	client := resty.New().
 		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
 		SetHeader("content-type", "application/json").
 		SetHeader("origin", "chrome-extension://fpdkjdnhkakefebpekbdhillbhonfjjp").
@@ -86,8 +86,6 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 		Post(constant.LoginURL)
 	if err != nil {
 		logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
-		time.Sleep(1 * time.Minute)
-		handleAccount(proxyURL, authInfo)
 		return
 	}
 	lastLogin := time.Now()
@@ -108,32 +106,50 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 				Post(constant.LoginURL)
 			if err != nil {
 				logger.Error("Login error", zap.String("acc", authInfo.Email), zap.Error(err))
-				time.Sleep(1 * time.Minute)
-				handleAccount(proxyURL, authInfo)
 				return
 			}
 			lastLogin = time.Now()
 		}
 
-		res, err := client.R().
-			SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
-			SetBody(keepAliveRequest).
-			Post(constant.KeepAliveURL)
-		if err != nil {
-			logger.Error("Keep alive error", zap.String("acc", authInfo.Email), zap.Error(err))
-		} else {
-			logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
-		}
+		// Rotate proxies for each request
+		for _, proxyURL := range proxies {
+			client.SetProxy(proxyURL)
 
-		res, err = client.R().
-			SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
-			Get(constant.GetPointURL)
-		if err != nil {
-			logger.Error("Get point error", zap.String("acc", authInfo.Email), zap.Error(err))
-		} else {
-			logger.Info("Get point success", zap.String("acc", authInfo.Email), zap.String("res", res.String()))
-		}
+			res, err := client.R().
+				SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
+				SetBody(keepAliveRequest).
+				Post(constant.KeepAliveURL)
+			if err != nil {
+				logger.Error("Keep alive error", zap.String("acc", authInfo.Email), zap.Error(err))
+			}
 
-		time.Sleep(3 * time.Minute)
+			res, err = client.R().
+				SetHeader("authorization", fmt.Sprintf("Bearer %v", loginResponse.Data.Token)).
+				Get(constant.GetPointURL)
+			if err != nil {
+				logger.Error("Get point error", zap.String("acc", authInfo.Email), zap.Error(err))
+			} else {
+				// Parse response to extract email and points
+				var getPointResponse struct {
+					Status  bool   `json:"status"`
+					Message string `json:"message"`
+					Data    struct {
+						RewardPoint struct {
+							Email  string  `json:"userId"`
+							Points float64 `json:"points"`
+						} `json:"rewardPoint"`
+					} `json:"data"`
+				}
+
+				err = res.Unmarshal(&getPointResponse)
+				if err != nil {
+					logger.Error("Error parsing get point response", zap.Error(err))
+				} else {
+					logger.Info("Account points", zap.String("email", getPointResponse.Data.RewardPoint.Email), zap.Float64("points", getPointResponse.Data.RewardPoint.Points))
+				}
+			}
+
+			time.Sleep(3 * time.Minute)
+		}
 	}
 }
