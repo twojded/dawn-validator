@@ -127,7 +127,7 @@ func handleAccount(proxyURL string, authInfo request.Authentication) {
 			logger.Info("Keep alive success", zap.String("acc", authInfo.Email), zap.String("points", extractPoints(res.String())))
 		}
 
-		time.Sleep(10 * time.Second) // Уменьшенная задержка с 3 минут до 10 секунд
+		time.Sleep(10 * time.Second)
 	}
 }
 
